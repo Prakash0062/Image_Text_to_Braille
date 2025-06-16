@@ -1,25 +1,13 @@
 import os
-from flask import Flask, request, render_template, redirect, url_for
-from werkzeug.utils import secure_filename
+import tempfile
 from PIL import Image
 import pytesseract
 from gtts import gTTS
 from langdetect import detect
+import streamlit as st
 from functools import lru_cache
 
-app = Flask(__name__)
-
-# Configure upload and audio folders
-UPLOAD_FOLDER = 'static/uploads'
-AUDIO_FOLDER = 'static/audio'
-
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(AUDIO_FOLDER, exist_ok=True)
-
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['AUDIO_FOLDER'] = AUDIO_FOLDER
-
-# Braille character map (same as before)
+# Braille character map for English and Hindi
 braille_map = {
     'a': '⠁', 'b': '⠃', 'c': '⠉', 'd': '⠙', 'e': '⠑',
     'f': '⠋', 'g': '⠛', 'h': '⠓', 'i': '⠊', 'j': '⠚',
@@ -28,52 +16,60 @@ braille_map = {
     'u': '⠥', 'v': '⠧', 'w': '⠺', 'x': '⠭', 'y': '⠽',
     'z': '⠵',
     ' ': ' ', '\n': '\n', ',': '⠂', '.': '⠲', '?': '⠦', '!': '⠖',
-    # Hindi characters...
-    "अ": "⠁", "आ": "⠡", "इ": "⠊", "ई": "⠒", "उ": "⠥", "ऊ": "⠳",
-    "ए": "⠑", "ऐ": "⠣", "ओ": "⠕", "औ": "⠷", "ऋ": "⠗", "क": "⠅",
-    "ख": "⠩", "ग": "⠛", "घ": "⠣", "ङ": "⠻", "च": "⠉", "छ": "⠡",
-    "ज": "⠚", "झ": "⠒", "ञ": "⠱", "ट": "⠞", "ठ": "⠾", "ड": "⠙",
-    "ढ": "⠹", "ण": "⠻", "त": "⠞", "थ": "⠮", "द": "⠙", "ध": "⠹",
-    "न": "⠝", "प": "⠏", "फ": "⠟", "ब": "⠃", "भ": "⠫", "म": "⠍",
-    "य": "⠽", "र": "⠗", "ल": "⠇", "व": "⠧", "श": "⠱", "ष": "⠳",
-    "स": "⠎", "ह": "⠓", "क्ष": "⠟", "ज्ञ": "⠻", "ड़": "⠚", "ढ़": "⠚",
-    "फ़": "⠋", "ज़": "⠵", "ग्य": "⠛⠽", "त्र": "⠞⠗", "श्र": "⠱⠗",
-    "ा": "⠡", "ि": "⠊", "ी": "⠒", "ु": "⠥", "ू": "⠳", "े": "⠑",
-    "ै": "⠣", "ो": "⠕", "ौ": "⠷", "ृ": "⠗", "्": "⠄", "ं": "⠈",
-    "ः": "⠘", "ँ": "⠨", "०": "⠚", "१": "⠁", "२": "⠃", "३": "⠉",
-    "४": "⠙", "५": "⠑", "६": "⠋", "७": "⠛", "८": "⠓", "९": "⠊",
-    "।": "⠲", "\"": "⠶", "'": "⠄", ";": "⠆", ":": "⠒", "-": "⠤",
-    "(": "⠶", ")": "⠶", "/": "⠌", "A": "⠁", "B": "⠃", "C": "⠉",
-    "D": "⠙", "E": "⠑", "F": "⠋", "G": "⠛", "H": "⠓", "I": "⠊",
-    "J": "⠚", "K": "⠅", "L": "⠇", "M": "⠍", "N": "⠝", "O": "⠕",
-    "P": "⠏", "Q": "⠟", "R": "⠗", "S": "⠎", "T": "⠞", "U": "⠥",
-    "V": "⠧", "W": "⠺", "X": "⠭", "Y": "⠽", "Z": "⠵"
+
+    # Hindi vowels, consonants, and other signs
+    "अ": "⠁", "आ": "⠡", "इ": "⠊", "ई": "⠒", "उ": "⠥",
+    "ऊ": "⠳", "ए": "⠑", "ऐ": "⠣", "ओ": "⠕", "औ": "⠷",
+    "ऋ": "⠗", "क": "⠅", "ख": "⠩", "ग": "⠛", "घ": "⠣",
+    "ङ": "⠻", "च": "⠉", "छ": "⠡", "ज": "⠚", "झ": "⠒",
+    "ञ": "⠱", "ट": "⠞", "ठ": "⠾", "ड": "⠙", "ढ": "⠹",
+    "ण": "⠻", "त": "⠞", "थ": "⠮", "द": "⠙", "ध": "⠹",
+    "न": "⠝", "प": "⠏", "फ": "⠟", "ब": "⠃", "भ": "⠫",
+    "म": "⠍", "य": "⠽", "र": "⠗", "ल": "⠇", "व": "⠧",
+    "श": "⠱", "ष": "⠳", "स": "⠎", "ह": "⠓", "क्ष": "⠟",
+    "ज्ञ": "⠻", "ड़": "⠚", "ढ़": "⠚", "फ़": "⠋", "ज़": "⠵",
+    "ग्य": "⠛⠽", "त्र": "⠞⠗", "श्र": "⠱⠗",
+
+    "ा": "⠡", "ि": "⠊", "ी": "⠒", "ु": "⠥", "ू": "⠳",
+    "े": "⠑", "ै": "⠣", "ो": "⠕", "ौ": "⠷", "ृ": "⠗",
+
+    "्": "⠄", "ं": "⠈", "ः": "⠘", "ँ": "⠨",
+
+    "०": "⠚", "१": "⠁", "२": "⠃", "३": "⠉", "४": "⠙",
+    "५": "⠑", "६": "⠋", "७": "⠛", "८": "⠓", "९": "⠊",
+
+    "।": "⠲", ",": "⠂", "?": "⠦", "!": "⠖", "\"": "⠶",
+    "'": "⠄", ";": "⠆", ":": "⠒", ".": "⠲", "-": "⠤",
+    "(": "⠶", ")": "⠶", "/": "⠌",
+
+    "A": "⠁", "B": "⠃", "C": "⠉", "D": "⠙", "E": "⠑",
+    "F": "⠋", "G": "⠛", "H": "⠓", "I": "⠊", "J": "⠚",
+    "K": "⠅", "L": "⠇", "M": "⠍", "N": "⠝", "O": "⠕",
+    "P": "⠏", "Q": "⠟", "R": "⠗", "S": "⠎", "T": "⠞",
+    "U": "⠥", "V": "⠧", "W": "⠺", "X": "⠭", "Y": "⠽", "Z": "⠵",
 }
 
 @lru_cache(maxsize=128)
 def text_to_braille(text):
     return ''.join(braille_map.get(ch, ' ') for ch in text)
 
-def save_tts_audio(text, lang, path):
-    try:
-        tts = gTTS(text=text, lang=lang)
-        tts.save(path)
-    except Exception as e:
-        print(f"[TTS ERROR] {e}")
+def resize_image(image, max_size=(1024, 1024)):
+    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+    return image
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    if request.method == 'POST':
-        if 'image' not in request.files or request.files['image'].filename == '':
-            return redirect(url_for('index'))
+def main():
+    st.title("Image Text Assistive - Streamlit App")
 
-        file = request.files['image']
-        filename = secure_filename(file.filename)
-        image_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(image_path)
+    uploaded_file = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
 
-        # OCR
-        img = Image.open(image_path).convert("RGB")
+    if uploaded_file is not None:
+        # Open and resize image
+        img = Image.open(uploaded_file).convert("RGB")
+        img = resize_image(img)
+
+        st.image(img, caption="Uploaded Image", use_column_width=True)
+
+        # OCR with pytesseract
         extracted_text = pytesseract.image_to_string(img, lang='hin+eng')
 
         # Language detection
@@ -88,18 +84,17 @@ def index():
         braille_prefix = '⠰⠓ ' if gtts_lang == 'hi' else '⠰⠑ '
         braille_text = braille_prefix + braille_body
 
-        # TTS save
-        audio_filename = filename.rsplit('.', 1)[0] + '.mp3'
-        audio_path = os.path.join(app.config['AUDIO_FOLDER'], audio_filename)
-        save_tts_audio(extracted_text, gtts_lang, audio_path)
+        st.subheader("Extracted Text")
+        st.write(extracted_text)
 
-        return render_template('index.html',
-                               original_image=f'uploads/{filename}',
-                               extracted_text=extracted_text,
-                               braille_text=braille_text,
-                               audio_file=f'audio/{audio_filename}')
+        st.subheader("Braille Text")
+        st.text(braille_text)
 
-    return render_template('index.html')
+        # Generate TTS audio and play
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_audio:
+            tts = gTTS(text=extracted_text, lang=gtts_lang)
+            tts.save(tmp_audio.name)
+            st.audio(tmp_audio.name, format="audio/mp3")
 
-if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0", port=5000)
+if __name__ == "__main__":
+    main()
